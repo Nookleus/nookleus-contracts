@@ -4,6 +4,12 @@ pragma solidity 0.8.26;
 
 // NOOKLEUS · FIELD NOTES · SPECIMEN 4: THE FIELD GUIDE (every hook a scout has listed)
 //
+// Observed, birth: deployed on its own, before the launch. Ethereum caps one transaction at 16,777,216 gas and the
+//   launch graph with all nine specimens measured 24.9M, so four of them (helix, lens, field guide, drawer) are born
+//   first and the launch names them. They know the launch only by SPROUT_CODEHASH, the code hash of the one sprout,
+//   whose bytes carry Programmable's graph factory as their deployer: the first and only bind must come from a
+//   contract with exactly that code. Nothing else can bind them, and nothing can bind them twice.
+//
 // Observed, listing: anyone (a person or an agent) lists a v4 pool with a 0.002 ETH deposit, which only blocks spam.
 //   The pool must exist and its hook must have code. Read once, from Ethereum alone (the hook's code is read, never
 //   run): its 14 abilities (the address bits), a dynamic fee (the pool key), what it trades (native ETH, a dollar
@@ -47,7 +53,7 @@ contract FieldGuide {
     address internal constant DAI = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
 
     IPoolManager public immutable MANAGER;
-    address public immutable SPROUT;
+    bytes32 public immutable SPROUT_CODEHASH; // the only code that may bind it, once
     address public lens;
     ISpecimens public specimens;
     bool public bound;
@@ -107,13 +113,13 @@ contract FieldGuide {
     error Nothing();
     error SendFailed();
 
-    constructor(IPoolManager manager, address sprout) {
+    constructor(IPoolManager manager, bytes32 sproutCodehash) {
         MANAGER = manager;
-        SPROUT = sprout;
+        SPROUT_CODEHASH = sproutCodehash;
     }
 
     function bind(address lens_, ISpecimens specimens_) external {
-        if (msg.sender != SPROUT) revert NotSprout();
+        if (msg.sender.codehash != SPROUT_CODEHASH) revert NotSprout();
         if (bound) revert AlreadyBound();
         bound = true;
         lens = lens_;

@@ -5,7 +5,9 @@ pragma solidity 0.8.26;
 // NOOKLEUS · FIELD NOTES · SPECIMEN 8: THE SPROUT (the launch, once)
 //
 // Observed: the sprout holds the whole NOOK supply from birth and can launch exactly once, called by its deployer
-//   (the launch graph). In that one call it names the token's non-holders, wires every specimen to the others, opens
+//   (the launch graph). In that one call it names the token's non-holders, wires every specimen to the others (the
+//   helix, lens, field guide and drawer were born earlier and accept this bind only from code hashing to this
+//   sprout's runtime, see Helix.sol), opens
 //   each species at its pinned price with the whole band from FLOOR_TICK up to it (NOOK only, the position NFT minted
 //   to Amber), and makes the first buy for OWNER with the ETH it was sent, through the nucleus like any trade.
 // Observed: whatever NOOK is left over by rounding is burned.
@@ -50,6 +52,10 @@ interface INucleusLaunch {
 
 interface IBindTwo {
     function bind(address a, address b) external;
+}
+
+interface IBindHelix {
+    function bind(address lens, address specimens, address nucleus) external;
 }
 
 contract Sprout is IUnlockCallback {
@@ -115,7 +121,7 @@ contract Sprout is IUnlockCallback {
         notHolders[3] = w.amber;
         INookLaunch(w.nook).designate(w.nucleus, notHolders);
         nucleus.bind(w.helix, w.gut, w.lens, w.guide);
-        IBindTwo(w.helix).bind(w.lens, w.specimens);
+        IBindHelix(w.helix).bind(w.lens, w.specimens, w.nucleus);
         IBindTwo(w.lens).bind(w.guide, w.helix);
         IBindTwo(w.guide).bind(w.lens, w.specimens);
         IBindTwo(w.specimens).bind(w.guide, w.helix);

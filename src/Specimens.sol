@@ -4,6 +4,12 @@ pragma solidity 0.8.26;
 
 // NOOKLEUS · FIELD NOTES · SPECIMEN 6: THE SPECIMEN DRAWER (collectibles, ERC-721)
 //
+// Observed, birth: deployed on its own, before the launch. Ethereum caps one transaction at 16,777,216 gas and the
+//   launch graph with all nine specimens measured 24.9M, so four of them (helix, lens, field guide, drawer) are born
+//   first and the launch names them. They know the launch only by SPROUT_CODEHASH, the code hash of the one sprout,
+//   whose bytes carry Programmable's graph factory as their deployer: the first and only bind must come from a
+//   contract with exactly that code. Nothing else can bind them, and nothing can bind them twice.
+//
 // Observed, three kinds, each minted only by a rule elsewhere, never sold:
 //   Trait    the first caller to claim a step that took a strand to a level it never held (helix)
 //   Species  the scout who listed the first hook of a new family (field guide)
@@ -18,7 +24,7 @@ contract Specimens {
     uint8 internal constant SPECIES = 2;
     uint8 internal constant ALMANAC = 3;
 
-    address public immutable SPROUT;
+    bytes32 public immutable SPROUT_CODEHASH; // the only code that may bind it, once
     address public guide;
     address public helix;
     bool public bound;
@@ -47,12 +53,12 @@ contract Specimens {
     error NoSuchCard();
     error BadReceiver();
 
-    constructor(address sprout) {
-        SPROUT = sprout;
+    constructor(bytes32 sproutCodehash) {
+        SPROUT_CODEHASH = sproutCodehash;
     }
 
     function bind(address guide_, address helix_) external {
-        if (msg.sender != SPROUT) revert NotSprout();
+        if (msg.sender.codehash != SPROUT_CODEHASH) revert NotSprout();
         if (bound) revert AlreadyBound();
         bound = true;
         guide = guide_;

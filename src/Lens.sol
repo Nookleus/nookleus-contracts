@@ -4,6 +4,12 @@ pragma solidity 0.8.26;
 
 // NOOKLEUS · FIELD NOTES · SPECIMEN 3: THE LENS (readings of the wild)
 //
+// Observed, birth: deployed on its own, before the launch. Ethereum caps one transaction at 16,777,216 gas and the
+//   launch graph with all nine specimens measured 24.9M, so four of them (helix, lens, field guide, drawer) are born
+//   first and the launch names them. They know the launch only by SPROUT_CODEHASH, the code hash of the one sprout,
+//   whose bytes carry Programmable's graph factory as their deployer: the first and only bind must come from a
+//   contract with exactly that code. Nothing else can bind them, and nothing can bind them twice.
+//
 // Observed: the lens keeps up to 192 pools in view, each one a pool a scout listed in the field guide, with native
 //   ETH as its first currency (only those can be measured in ETH without trusting a price).
 // Observed, a sample: anyone may sample tracked pools, each at most once an hour, through PoolManager.extsload only
@@ -55,7 +61,7 @@ contract Lens is IUnlockCallback {
     uint256 internal constant POOLS_SLOT = 6;
 
     IPoolManager public immutable MANAGER;
-    address public immutable SPROUT;
+    bytes32 public immutable SPROUT_CODEHASH; // the only code that may bind it, once
     address public guide;
     address public helix;
     bool public bound;
@@ -132,13 +138,13 @@ contract Lens is IUnlockCallback {
     error Unlocked();
     error Nothing();
 
-    constructor(IPoolManager manager, address sprout) {
+    constructor(IPoolManager manager, bytes32 sproutCodehash) {
         MANAGER = manager;
-        SPROUT = sprout;
+        SPROUT_CODEHASH = sproutCodehash;
     }
 
     function bind(address guide_, address helix_) external {
-        if (msg.sender != SPROUT) revert NotSprout();
+        if (msg.sender.codehash != SPROUT_CODEHASH) revert NotSprout();
         if (bound) revert AlreadyBound();
         bound = true;
         guide = guide_;

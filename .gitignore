@@ -1,2 +1,5 @@
 out/
 cache/
+artifacts/
+standard-json/
+evidence/

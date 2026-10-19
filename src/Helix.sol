@@ -4,6 +4,12 @@ pragma solidity 0.8.26;
 
 // NOOKLEUS · FIELD NOTES · SPECIMEN 2: THE HELIX (the brain and the clock)
 //
+// Observed, birth: deployed on its own, before the launch. Ethereum caps one transaction at 16,777,216 gas and the
+//   launch graph with all nine specimens measured 24.9M, so four of them (helix, lens, field guide, drawer) are born
+//   first and the launch names them. They know the launch only by SPROUT_CODEHASH, the code hash of the one sprout,
+//   whose bytes carry Programmable's graph factory as their deployer: the first and only bind must come from a
+//   contract with exactly that code. Nothing else can bind them, and nothing can bind them twice.
+//
 // Observed, the signal for each of the six trait families: how much more of the ecosystem's measured life the
 //   family carries than its plain share of tracked pools (the lens), 60% over the last day and 40% over the last
 //   week; blended half and half with what Nookleus' own traders pledged (fee-weighted, see the nucleus) when any did.
@@ -52,8 +58,8 @@ contract Helix {
     uint8 internal constant KIND_TRAIT = 1;
     uint8 internal constant KIND_ALMANAC = 3;
 
-    INucleus public immutable NUCLEUS;
-    address public immutable SPROUT;
+    bytes32 public immutable SPROUT_CODEHASH; // the only code that may bind the helix, once
+    INucleus public nucleus; // named by the sprout at the launch
     ILens public lens;
     ISpecimens public specimens;
     uint64 public bornAt;
@@ -98,23 +104,23 @@ contract Helix {
     error Missed();
     error Scored_();
 
-    constructor(INucleus nucleus, address sprout) {
-        NUCLEUS = nucleus;
-        SPROUT = sprout;
+    constructor(bytes32 sproutCodehash) {
+        SPROUT_CODEHASH = sproutCodehash;
     }
 
-    function bind(ILens lens_, ISpecimens specimens_) external {
-        if (msg.sender != SPROUT) revert NotSprout();
+    function bind(ILens lens_, ISpecimens specimens_, INucleus nucleus_) external {
+        if (msg.sender.codehash != SPROUT_CODEHASH) revert NotSprout();
         if (bound) revert AlreadyBound();
         bound = true;
+        nucleus = nucleus_;
         lens = lens_;
         specimens = specimens_;
         bornAt = uint64(block.timestamp);
         day = uint32(block.timestamp / 1 days);
         // the starting levels count as seen: only a level a strand never held before earns a Trait specimen
-        uint256 n = NUCLEUS.speciesCount();
+        uint256 n = nucleus.speciesCount();
         for (uint256 s; s < n; ++s) {
-            uint8[6] memory lv = NUCLEUS.strandsOf(s);
+            uint8[6] memory lv = nucleus.strandsOf(s);
             for (uint256 f; f < 6; ++f) levelsSeen[s] |= uint64(uint256(1) << (f * 9 + lv[f]));
         }
         emit Bound(address(lens_), address(specimens_));
@@ -127,7 +133,7 @@ contract Helix {
     function pulse() external returns (uint64 nextAt) {
         uint256 t = block.timestamp;
         uint32 hour = uint32(t / HOUR);
-        uint256 n = NUCLEUS.speciesCount();
+        uint256 n = nucleus.speciesCount();
         _calendar(t, n);
         for (uint256 s; s < n; ++s) {
             Plan memory p = plan[s];
@@ -142,7 +148,7 @@ contract Helix {
         uint256 t = block.timestamp;
         uint256 hour = t / HOUR;
         at = type(uint64).max;
-        uint256 n = NUCLEUS.speciesCount();
+        uint256 n = nucleus.speciesCount();
         for (uint256 s; s < n; ++s) {
             Plan memory p = plan[s];
             if (p.set && p.hour * HOUR < at) at = uint64(p.hour * HOUR);
@@ -155,7 +161,7 @@ contract Helix {
     }
 
     function _apply(uint256 s, Plan memory p, uint256 t) internal {
-        uint8[6] memory lv = NUCLEUS.strandsOf(s);
+        uint8[6] memory lv = nucleus.strandsOf(s);
         uint8 from = lv[p.strand];
         lv[p.strand] = p.level;
         delete plan[s];
@@ -174,7 +180,7 @@ contract Helix {
             traitOpen[previewHour] |= uint8(1 << s);
         }
         if (s < 2) stepsToday[s] += 1;
-        NUCLEUS.setStrands(s, lv, 0);
+        nucleus.setStrands(s, lv, 0);
         emit Mutated(s, p.hour, p.strand, from, p.level, p.experiment);
     }
 
@@ -182,7 +188,7 @@ contract Helix {
 
     function _evaluate(uint256 s, uint32 hour, uint256 t) internal {
         evaluatedHour[s] = hour;
-        uint8[6] memory lv = NUCLEUS.strandsOf(s);
+        uint8[6] memory lv = nucleus.strandsOf(s);
         int256[6] memory sig = signals(s);
         uint256 seenW = seen[s];
         uint256 dropW = dropped[s];
@@ -237,7 +243,7 @@ contract Helix {
     /// @notice The six family signals for a species, 1e18 = one whole share.
     function signals(uint256 s) public view returns (int256[6] memory sig) {
         uint256[4][6] memory sh = lens.familyShares();
-        uint256[6] memory pl = NUCLEUS.pledgesOf(s);
+        uint256[6] memory pl = nucleus.pledgesOf(s);
         uint256 sumP;
         for (uint256 f; f < 6; ++f) sumP += pl[f];
         for (uint256 f; f < 6; ++f) {
@@ -290,7 +296,7 @@ contract Helix {
             stepsToday[0] = 0;
             stepsToday[1] = 0;
             for (uint256 s; s < n; ++s) {
-                uint256 k = NUCLEUS.strandsOf(s)[5]; // SPORES level = releases today
+                uint256 k = nucleus.strandsOf(s)[5]; // SPORES level = releases today
                 uint32 mask;
                 uint256 e = uint256(keccak256(abi.encode(block.prevrandao, d, s)));
                 for (uint256 i; i < k; ++i) {
@@ -305,7 +311,7 @@ contract Helix {
         }
         // the season (about 0.55M gas) does not land on a trader unless nobody else closed it for a day
         uint256 due = bornAt + SEASON * (uint256(season) + 1);
-        if (bound && t >= due && (msg.sender != address(NUCLEUS) || t >= due + 1 days)) {
+        if (bound && t >= due && (msg.sender != address(nucleus) || t >= due + 1 days)) {
             season += 1;
             // read before reseason(): it starts the next observer season (and clears the leader)
             address observer = ILensSeason(address(lens)).leadingObserver();
@@ -331,7 +337,7 @@ contract Helix {
     /// @notice Claim your point for a correct mutation call (and the Trait specimen, if you are the first to claim a
     ///         step that reached a new level).
     function score() external returns (uint32 total) {
-        (uint32 h, uint8 code) = NUCLEUS.callOf(msg.sender);
+        (uint32 h, uint8 code) = nucleus.callOf(msg.sender);
         if (h <= scoredHour[msg.sender]) revert Scored_();
         if (block.timestamp < (uint256(h) + 1) * HOUR) revert NotDue();
         uint256 s = (code >> 4) & 0x7;

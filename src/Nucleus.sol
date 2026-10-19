@@ -8,7 +8,9 @@ pragma solidity 0.8.26;
 //   six strands, levels 0 to 8, which the helix moves at most one step an hour (see Helix.sol).
 // Observed, on the ETH side of every trade, buy or sell, whichever amount the trader named:
 //   0.30% to Programmable (minted as ETH claims to their unmodified fee vault, rounded up, every swap),
-//   1.5% to the owner (fixed), and a module fee (1% base) the strands share. Owner plus module never exceed 3.5%.
+//   1.5% to the owner, and a module fee (1% base) the strands share. Owner plus module never exceed 3.5%.
+//   Launch window: for the first 300 seconds after the start the owner's share is 5% instead (buys and sells, every
+//   wallet, the named ones too) and the module fee stays at its 1% base; from then on it is 1.5% for good.
 //   Every species pool has a 0% LP fee (the constructor refuses any other): the hook's charge is the whole fee.
 // Observed, the strands:
 //   TEMPER   a surcharge up to 0.125% per level, scaled by how far the price sits from its 10-minute mean (200 ticks
@@ -52,6 +54,7 @@ import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {EthereumNativeFeeVaultV3} from "./vendor/EthereumNativeFeeVaultV3.sol";
 import {LaunchProtectionModuleV1} from "./vendor/LaunchProtectionModuleV1.sol";
 import {ProtectedLaunchTokenV1} from "./vendor/ProtectedLaunchTokenV1.sol";
+import {ProgrammableCreationCode} from "./vendor/ProgrammableCreationCode.sol";
 import {INookToken, IHelix, IFieldGuide} from "./Interfaces.sol";
 
 interface IGutFund {
@@ -66,6 +69,8 @@ contract Nucleus is IHooks, IUnlockCallback {
     uint256 internal constant PIPS = 1_000_000;
     uint256 public constant PLATFORM_PIPS = 3_000;
     uint256 public constant OWNER_PIPS = 15_000;
+    uint256 public constant LAUNCH_OWNER_PIPS = 50_000; // the owner's share in the launch window
+    uint256 public constant LAUNCH_TAX_SECONDS = 300;
     uint256 public constant MODULE_PIPS = 10_000;
     uint256 public constant HOOK_CAP_PIPS = 35_000;
     uint256 public constant TEMPER_STEP_PIPS = 1_250;
@@ -136,6 +141,7 @@ contract Nucleus is IHooks, IUnlockCallback {
     mapping(uint256 => Accrual) public accrual;
     mapping(uint256 => uint256) internal pledge; // uint64 hour stamp << 192 | six uint32 EMAs in 1e12 wei
     uint64 public nextPulseAt;
+    uint64 public openedAt; // when the sprout opened the first species (the same block as Nook.start); one slot with nextPulseAt
 
     uint256 public nectarBook;
     uint256 public digestBook;
@@ -211,11 +217,19 @@ contract Nucleus is IHooks, IUnlockCallback {
         OWNER = owner_;
         NOOK = nook;
         SPROUT = sprout;
-        feeVault = new EthereumNativeFeeVaultV3(manager, owner_);
-        protection = new LaunchProtectionModuleV1(
-            address(this), ProtectedLaunchTokenV1(nook), owner_, router, routerCodeHash, NORMAL_CREATOR_BUY_BPS, exemptWallets
+        // children 1, 2, 3, from Programmable's own creation bytes (see vendor/ProgrammableCreationCode.sol)
+        feeVault = EthereumNativeFeeVaultV3(_create(bytes.concat(ProgrammableCreationCode.ETHEREUM_NATIVE_FEE_VAULT_V3, abi.encode(manager, owner_))));
+        protection = LaunchProtectionModuleV1(
+            _create(
+                bytes.concat(
+                    ProgrammableCreationCode.LAUNCH_PROTECTION_MODULE_V1,
+                    abi.encode(address(this), nook, owner_, router, routerCodeHash, NORMAL_CREATOR_BUY_BPS, exemptWallets)
+                )
+            )
         );
-        openingTaxVault = new EthereumNativeFeeVaultV3(manager, feeVault.PLATFORM_RECIPIENT());
+        openingTaxVault = EthereumNativeFeeVaultV3(
+            _create(bytes.concat(ProgrammableCreationCode.ETHEREUM_NATIVE_FEE_VAULT_V3, abi.encode(manager, feeVault.PLATFORM_RECIPIENT())))
+        );
         if (lpFees.length == 0 || lpFees.length > 2 || spacings.length != lpFees.length || openTicks.length != lpFees.length) {
             revert WrongPool();
         }
@@ -227,6 +241,13 @@ contract Nucleus is IHooks, IUnlockCallback {
             indexOf[id] = i + 1;
             strands[i] = _uniform(START_LEVEL);
         }
+    }
+
+    function _create(bytes memory init) private returns (address a) {
+        assembly ("memory-safe") {
+            a := create(0, add(init, 32), mload(init))
+        }
+        if (a == address(0)) revert WrongPool();
     }
 
     receive() external payable {
@@ -245,6 +266,7 @@ contract Nucleus is IHooks, IUnlockCallback {
     /// @notice By the sprout, inside its launch step: the next liquidity add may be this species' launch band.
     function markOpening(uint256 s) external {
         if (msg.sender != SPROUT) revert NotSprout();
+        if (openedAt == 0) openedAt = uint64(block.timestamp);
         bytes32 slot = T_OPENING;
         assembly {
             tstore(slot, add(s, 1))
@@ -326,7 +348,7 @@ contract Nucleus is IHooks, IUnlockCallback {
         }
         uint256 named = p.amountSpecified < 0 ? uint256(-p.amountSpecified) : uint256(p.amountSpecified);
         if (named == 0) revert NoEth();
-        uint256 rate = PLATFORM_PIPS + OWNER_PIPS + modulePips + taxPips;
+        uint256 rate = PLATFORM_PIPS + ownerPips() + modulePips + taxPips;
         uint256 gross;
         uint256 total;
         uint256 expected;
@@ -368,7 +390,7 @@ contract Nucleus is IHooks, IUnlockCallback {
             return (IHooks.afterSwap.selector, 0);
         }
         if (eth == 0) revert NoEth();
-        uint256 rate = PLATFORM_PIPS + OWNER_PIPS + modulePips + taxPips;
+        uint256 rate = PLATFORM_PIPS + ownerPips() + modulePips + taxPips;
         uint256 gross;
         uint256 total;
         if (p.zeroForOne) {
@@ -406,7 +428,7 @@ contract Nucleus is IHooks, IUnlockCallback {
         }
         uint256 platform = _ceilDiv(gross * PLATFORM_PIPS, PIPS);
         if (platform > total) platform = total;
-        uint256 owner = (gross * OWNER_PIPS) / PIPS;
+        uint256 owner = (gross * ownerPips()) / PIPS;
         if (owner > total - platform) owner = total - platform;
         uint256 module = total - platform - owner;
         if (platform != 0) {
@@ -453,7 +475,18 @@ contract Nucleus is IHooks, IUnlockCallback {
             (uint256 age, uint256 bal) = INookToken(NOOK).ageOf(tx.origin);
             if (age >= KIN_AGE && bal >= KIN_MIN) m -= (m * kl * KIN_STEP_BPS) / 10_000;
         }
-        if (OWNER_PIPS + m > HOOK_CAP_PIPS) m = HOOK_CAP_PIPS - OWNER_PIPS;
+        uint256 own = ownerPips();
+        if (own != OWNER_PIPS) {
+            if (m > MODULE_PIPS) m = MODULE_PIPS; // launch window: the module stays at its base
+        } else if (own + m > HOOK_CAP_PIPS) m = HOOK_CAP_PIPS - own;
+    }
+
+    /// @notice The owner's share of a trade now, in pips: 5% for the first 300 seconds after the start, then 1.5%.
+    /// @dev Reads its own openedAt (set in the launch transaction, the block Nook.start runs in), not the token: the slot
+    ///      is already warm from nextPulseAt, which saves a buy about 6,300 gas and a sell about 4,600 (measured).
+    function ownerPips() public view returns (uint256) {
+        uint256 t = openedAt;
+        return t != 0 && block.timestamp < t + LAUNCH_TAX_SECONDS ? LAUNCH_OWNER_PIPS : OWNER_PIPS;
     }
 
     /// @dev 0..10_000: how far the tick sits from its 10-minute mean, 200 ticks or more = 10_000. Updates the mean.
@@ -684,7 +717,7 @@ contract Nucleus is IHooks, IUnlockCallback {
         if (buy) {
             if (block.timestamp < INookToken(NOOK).startedAt() + PROTECTION_SECONDS) buyer = protection.protectedBuyer(sender);
             taxPips = protection.openingTaxPpmForSender(sender);
-            uint256 normal = PLATFORM_PIPS + OWNER_PIPS + modulePips;
+            uint256 normal = PLATFORM_PIPS + ownerPips() + modulePips;
             if (taxPips + normal > OPENING_TOTAL_PIPS) taxPips = normal >= OPENING_TOTAL_PIPS ? 0 : OPENING_TOTAL_PIPS - normal;
         }
         bytes32 slot = T_GUARD;

@@ -24,8 +24,9 @@ contracts compile, byte for byte: `forge build` here gives the same bytecode as 
 | `src/Amber.sol` | Holds the launch band's position NFT forever. |
 | `src/Sprout.sol` | The launch step, once: wires the contracts, opens the pool, seeds the band, starts trading, makes the first buy. |
 | `src/Interfaces.sol` | The calls between these contracts. |
-| `src/vendor/EthereumNativeFeeVaultV3.sol` | Programmable's fee vault, unmodified. The hook creates two: one for the platform fee, one for the opening surcharge. |
-| `src/vendor/LaunchProtectionModuleV1.sol`, `src/vendor/ProtectedLaunchTokenV1.sol` | Programmable's launch protection module, unmodified (the token file is only its interface). The hook creates the module. |
+| `src/vendor/ProgrammableCreationCode.sol` | Programmable's published creation bytecode for the launch protection module and the fee vault, copied byte for byte from `@programmable/launch` 4.1.7. The hook creates its three children from these bytes, so their runtimes are exactly Programmable's own. |
+| `src/vendor/EthereumNativeFeeVaultV3.sol` | Programmable's fee vault source, unmodified, for reading and for its type. The hook creates two: one for the platform fee and the owner, one for the opening surcharge. |
+| `src/vendor/LaunchProtectionModuleV1.sol`, `src/vendor/ProtectedLaunchTokenV1.sol` | Programmable's launch protection module source, unmodified (the token file is only its interface). The hook creates the module. |
 
 There is no owner function, no pause, no upgrade, no proxy and no way to remove liquidity in any contract.
 
@@ -36,12 +37,13 @@ The pool's LP fee is 0%: the hook refuses any other. All fees are taken in ETH b
 | Fee | Rate | Goes to |
 | --- | --- | --- |
 | Programmable platform fee | 0.30% of the trade's gross ETH, rounded up | `EthereumNativeFeeVaultV3`, claimable only by Programmable's treasury |
-| Owner | 1.5% | The owner, paid out by `remitOwner()` (anyone may call it; the ETH goes only to the owner) |
+| Owner | 1.5% (5% for the first 300 seconds after the start) | The owner, paid out by `remitOwner()` (anyone may call it; the ETH goes only to the owner) |
 | Module | 1% base | The ecosystem, below |
 
 A normal trade pays 2.8%. TEMPER adds up to 0.125% per level when the price is far from its 10-minute mean; KINSHIP
 takes 6.25% per level off the module fee for wallets holding at least 1,000,000 $NOOK for 7 days. Owner plus module never
-exceed 3.5%, so a trade never pays more than 3.8%.
+exceed 3.5%, so a trade never pays more than 3.8%. For the first 300 seconds after the start the owner's share is 5% on
+buys and sells, for every wallet, and the module fee stays at its 1% base: 6.3% in total.
 
 The module fee: 10% to the scout of the hook a buyer pledged in the swap's hookData, 5% to the observers, then by the
 strand levels: NECTAR 7.5% per level to every holder, DIGEST 7.5% per level to buyback and burn (plus whatever no strand
@@ -63,20 +65,33 @@ Programmable's mandatory policy v1, in force from the start of trading:
   keep both 2% limits. Sells pay normal fees throughout.
 - The first buy is required, made in the launch transaction for the owner, and is itself held to 2%.
 
+## How it launches
+
+Ethereum caps one transaction at 16,777,216 gas. All nine contracts in one launch transaction measured 24.9M, so the
+launch comes in two steps:
+
+1. The owner deploys `Helix`, `Lens`, `FieldGuide` and `Specimens`. Each takes one constructor argument, the code hash
+   of the Sprout exactly as Programmable's graph factory will create it, and accepts its single `bind` only from a
+   contract with that code. The Sprout's code names the factory as its deployer, so nothing else can produce it, and
+   nothing can bind them twice. There is no owner function in any of them.
+2. Programmable's graph factory deploys `Sprout`, `Nook`, `Nucleus`, `Gut` and `Amber` and calls `Sprout.launch` in one
+   transaction (measured 13.75M gas on a mainnet fork): every contract is wired to the others, the pool opens at its
+   pinned price, the band is seeded and its NFT goes to `Amber`, trading starts and the owner's first buy is made.
+
 ## Measured gas
 
 | Action | Gas |
 | --- | --- |
-| Buy, exact ETH in | 201,673 |
-| Sell, exact $NOOK in | 188,734 |
-| Buy with a pledge and a prediction | 286,617 |
-| Buy that runs the hourly preview | 321,884 |
-| Buy on a new UTC day (SPORES hours drawn) | 258,236 |
-| Buy closing a season a day overdue | 819,602 |
-| `flow` (books to holders, gut, lens) | 361,137 |
-| `remitOwner` | 88,324 |
-| `digest` (buyback and burn) | 366,431 |
-| `plant` (ROOTS) | 261,183 |
+| Buy, exact ETH in | 225,493 |
+| Sell, exact $NOOK in | 189,792 |
+| Buy with a pledge and a prediction | 287,826 |
+| Buy that runs the hourly preview | 342,822 |
+| Buy on a new UTC day (SPORES hours drawn) | 261,691 |
+| Buy closing a season a day overdue | 759,618 |
+| `flow` (books to holders, gut, lens) | 361,244 |
+| `remitOwner` | 88,390 |
+| `digest` (buyback and burn) | 299,754 |
+| `plant` (ROOTS) | 261,271 |
 | `list` a pool of a new family | 743,532 |
 | `sample` 8 pools, steady state | 696,929 |
 
